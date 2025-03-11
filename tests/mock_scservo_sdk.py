@@ -1,3 +1,16 @@
+# Copyright 2024 The HuggingFace Inc. team. All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
 """Mocked classes and functions from dynamixel_sdk to allow for continuous integration
 and testing code logic that requires hardware and devices (e.g. robot arms, cameras)
 
@@ -46,6 +59,7 @@ class PortHandler:
         self.port = port
         # factory default baudrate
         self.baudrate = DEFAULT_BAUDRATE
+        self.ser = SerialMock()
 
     def openPort(self):  # noqa: N802
         return True
@@ -101,3 +115,11 @@ class GroupSyncWrite:
 
     def changeParam(self, index, data):  # noqa: N802
         self.packet_handler.data[index][self.address] = data
+
+
+class SerialMock:
+    def reset_output_buffer(self):
+        pass
+
+    def reset_input_buffer(self):
+        pass

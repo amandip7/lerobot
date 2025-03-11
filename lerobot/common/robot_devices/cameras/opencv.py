@@ -1,3 +1,17 @@
+# Copyright 2024 The HuggingFace Inc. team. All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """
 This file contains utilities for recording frames from cameras. For more info look at `OpenCVCamera` docstring.
 """
@@ -9,13 +23,13 @@ import platform
 import shutil
 import threading
 import time
-from dataclasses import dataclass, replace
 from pathlib import Path
 from threading import Thread
 
 import numpy as np
 from PIL import Image
 
+from lerobot.common.robot_devices.cameras.configs import OpenCVCameraConfig
 from lerobot.common.robot_devices.utils import (
     RobotDeviceAlreadyConnectedError,
     RobotDeviceNotConnectedError,
@@ -126,7 +140,8 @@ def save_images_from_cameras(
     print("Connecting cameras")
     cameras = []
     for cam_idx in camera_ids:
-        camera = OpenCVCamera(cam_idx, fps=fps, width=width, height=height, mock=mock)
+        config = OpenCVCameraConfig(camera_index=cam_idx, fps=fps, width=width, height=height, mock=mock)
+        camera = OpenCVCamera(config)
         camera.connect()
         print(
             f"OpenCVCamera({camera.camera_index}, fps={camera.fps}, width={camera.width}, "
@@ -175,36 +190,6 @@ def save_images_from_cameras(
     print(f"Images have been saved to {images_dir}")
 
 
-@dataclass
-class OpenCVCameraConfig:
-    """
-    Example of tested options for Intel Real Sense D405:
-
-    ```python
-    OpenCVCameraConfig(30, 640, 480)
-    OpenCVCameraConfig(60, 640, 480)
-    OpenCVCameraConfig(90, 640, 480)
-    OpenCVCameraConfig(30, 1280, 720)
-    ```
-    """
-
-    fps: int | None = None
-    width: int | None = None
-    height: int | None = None
-    color_mode: str = "rgb"
-    rotation: int | None = None
-    mock: bool = False
-
-    def __post_init__(self):
-        if self.color_mode not in ["rgb", "bgr"]:
-            raise ValueError(
-                f"`color_mode` is expected to be 'rgb' or 'bgr', but {self.color_mode} is provided."
-            )
-
-        if self.rotation not in [-90, None, 90, 180]:
-            raise ValueError(f"`rotation` must be in [-90, None, 90, 180] (got {self.rotation})")
-
-
 class OpenCVCamera:
     """
     The OpenCVCamera class allows to efficiently record images from cameras. It relies on opencv2 to communicate
@@ -224,7 +209,10 @@ class OpenCVCamera:
 
     Example of usage:
     ```python
-    camera = OpenCVCamera(camera_index=0)
+    from lerobot.common.robot_devices.cameras.configs import OpenCVCameraConfig
+
+    config = OpenCVCameraConfig(camera_index=0)
+    camera = OpenCVCamera(config)
     camera.connect()
     color_image = camera.read()
     # when done using the camera, consider disconnecting
@@ -233,25 +221,16 @@ class OpenCVCamera:
 
     Example of changing default fps, width, height and color_mode:
     ```python
-    camera = OpenCVCamera(0, fps=30, width=1280, height=720)
-    camera = connect()  # applies the settings, might error out if these settings are not compatible with the camera
-
-    camera = OpenCVCamera(0, fps=90, width=640, height=480)
-    camera = connect()
-
-    camera = OpenCVCamera(0, fps=90, width=640, height=480, color_mode="bgr")
-    camera = connect()
+    config = OpenCVCameraConfig(camera_index=0, fps=30, width=1280, height=720)
+    config = OpenCVCameraConfig(camera_index=0, fps=90, width=640, height=480)
+    config = OpenCVCameraConfig(camera_index=0, fps=90, width=640, height=480, color_mode="bgr")
+    # Note: might error out open `camera.connect()` if these settings are not compatible with the camera
     ```
     """
 
-    def __init__(self, camera_index: int | str, config: OpenCVCameraConfig | None = None, **kwargs):
-        if config is None:
-            config = OpenCVCameraConfig()
-
-        # Overwrite config arguments using kwargs
-        config = replace(config, **kwargs)
-
-        self.camera_index = camera_index
+    def __init__(self, config: OpenCVCameraConfig):
+        self.config = config
+        self.camera_index = config.camera_index
         self.port = None
 
         # Linux uses ports for connecting to cameras
@@ -263,11 +242,12 @@ class OpenCVCamera:
                 # Retrieve the camera index from a potentially symlinked path
                 self.camera_index = get_camera_index_from_unix_port(self.port)
             else:
-                raise ValueError(f"Please check the provided camera_index: {camera_index}")
+                raise ValueError(f"Please check the provided camera_index: {self.camera_index}")
 
         self.fps = config.fps
         self.width = config.width
         self.height = config.height
+        self.channels = config.channels
         self.color_mode = config.color_mode
         self.mock = config.mock
 
@@ -305,10 +285,20 @@ class OpenCVCamera:
             # when other threads are used to save the images.
             cv2.setNumThreads(1)
 
+        backend = (
+            cv2.CAP_V4L2
+            if platform.system() == "Linux"
+            else cv2.CAP_DSHOW
+            if platform.system() == "Windows"
+            else cv2.CAP_AVFOUNDATION
+            if platform.system() == "Darwin"
+            else cv2.CAP_ANY
+        )
+
         camera_idx = f"/dev/video{self.camera_index}" if platform.system() == "Linux" else self.camera_index
         # First create a temporary camera trying to access `camera_index`,
         # and verify it is a valid camera by calling `isOpened`.
-        tmp_camera = cv2.VideoCapture(camera_idx)
+        tmp_camera = cv2.VideoCapture(camera_idx, backend)
         is_camera_open = tmp_camera.isOpened()
         # Release camera to make it accessible for `find_camera_indices`
         tmp_camera.release()
@@ -331,7 +321,7 @@ class OpenCVCamera:
         # Secondly, create the camera that will be used downstream.
         # Note: For some unknown reason, calling `isOpened` blocks the camera which then
         # needs to be re-created.
-        self.camera = cv2.VideoCapture(camera_idx)
+        self.camera = cv2.VideoCapture(camera_idx, backend)
 
         if self.fps is not None:
             self.camera.set(cv2.CAP_PROP_FPS, self.fps)
